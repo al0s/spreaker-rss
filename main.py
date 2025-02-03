@@ -3,8 +3,8 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-# 📌 Podcast ID ve API URL
-PODCAST_ID = input("Show ID: ")
+# 📌 Kullanıcıdan Podcast ID'sini Al
+PODCAST_ID = input("Show ID: ").strip()  # Kullanıcının girdiği ID'yi al ve boşlukları temizle
 BASE_URL = f"https://api.spreaker.com/v2/shows/{PODCAST_ID}/episodes"
 
 # 📌 API'den bölümleri çeken fonksiyon
@@ -13,54 +13,55 @@ def fetch_episodes():
     next_page_url = BASE_URL + "?limit=100"
 
     while next_page_url:
-        response = requests.get(next_page_url)
-        if response.status_code != 200:
-            print(f"Hata: API isteği başarısız oldu. Kod: {response.status_code}")
-            break
+        try:
+            response = requests.get(next_page_url, timeout=10)  # 10 saniye içinde yanıt bekle
+            
+            # 📌 Hata kontrolü
+            if response.status_code == 404:
+                print(f"❌ Hata: Geçersiz SHOW ID! ({PODCAST_ID}) Böyle bir podcast bulunamadı.")
+                return []
+            elif response.status_code != 200:
+                print(f"⚠️ Hata: API isteği başarısız oldu. Kod: {response.status_code}")
+                return []
 
-        data = response.json()
-        episodes = data.get("response", {}).get("items", [])
+            data = response.json()
+            episodes = data.get("response", {}).get("items", [])
 
-        if not episodes:
-            break
+            if not episodes:
+                print("🔍 Uyarı: Hiç bölüm bulunamadı!")
+                return []
 
-        #for episode in episodes:
-            #print("🛠️ API'den Gelen Bölüm Verisi:", episode)  # Debug için
+            all_episodes.extend(episodes)
+            next_page_url = data.get("response", {}).get("next_url", None)  # Sonraki sayfa var mı?
 
-        all_episodes.extend(episodes)
-        next_page_url = data.get("response", {}).get("next_url", None)
-        time.sleep(0.5)
+            time.sleep(0.5)  # API'yi aşırı yüklememek için kısa bekleme
+
+        except requests.exceptions.RequestException as e:
+            print(f"🚨 Bağlantı hatası: {e}")
+            return []
 
     return all_episodes
 
-# 📌 Yayın tarihi formatlama fonksiyonu (Alternatif Kaynak Kullanır)
-def format_pub_date(episode):
-    """
-    Spreaker API'den gelen tarihleri RSS uyumlu hale getirir.
-    Eğer `published_at` yoksa `created_at` kullanılır.
-    """
-    date_string = episode.get("published_at") or episode.get("created_at")
-
+# 📌 Yayın tarihi formatlama fonksiyonu
+def format_pub_date(date_string):
     if not date_string:
-        print(f"⚠️ Uyarı: Bu bölümde tarih bulunamadı! Bölüm ID: {episode.get('id')}")
-        return None  # Tarih yoksa eklenmesin
+        return None
 
     try:
-        # ✅ Format 1: ISO 8601 (2021-02-06T00:13:04Z)
         return datetime.strptime(date_string, "%Y-%m-%dT%H:%M:%SZ").strftime("%a, %d %b %Y %H:%M:%S +0000")
-
     except ValueError:
         try:
-            # ✅ Format 2: Spreaker API'nin hatalı formatı (2021-02-06 00:13:04)
             return datetime.strptime(date_string, "%Y-%m-%d %H:%M:%S").strftime("%a, %d %b %Y %H:%M:%S +0000")
-
         except ValueError:
-            print(f"⚠️ Tarih formatlama hatası: Bilinmeyen format! Gelen veri: {date_string}")
-            return None  # Geçersizse hiç eklenmesin
-
+            print(f"⚠️ Tarih formatlama hatası! Gelen veri: {date_string}")
+            return None
 
 # 📌 RSS feed'i oluşturma
 def create_rss(episodes):
+    if not episodes:
+        print("⚠️ Hata: RSS oluşturulamadı çünkü hiç bölüm bulunamadı.")
+        return None
+
     rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
 
@@ -83,9 +84,9 @@ def create_rss(episodes):
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"spreaker-{guid}"
 
         # 📌 Yayın tarihi (pubDate)
-        formatted_pub_date = format_pub_date(episode)
+        formatted_pub_date = format_pub_date(episode.get("published_at", ""))
         if formatted_pub_date:
-            ET.SubElement(item, "pubDate").text = formatted_pub_date  # Sadece geçerli tarihleri ekle
+            ET.SubElement(item, "pubDate").text = formatted_pub_date
 
         # 🎵 MP3 Ses Dosyası (Enclosure)
         mp3_url = episode.get("download_url", "")
@@ -102,8 +103,8 @@ def create_rss(episodes):
 episodes = fetch_episodes()
 rss_tree = create_rss(episodes)
 
-# 📌 XML Dosyasını Kaydetme
-file_name = "spreaker_podcast.xml"
-rss_tree.write(file_name, encoding="utf-8", xml_declaration=True)
-
-print(f"✅ RSS feed '{file_name}' olarak kaydedildi!")
+# 📌 Eğer RSS başarılı şekilde oluşturulduysa dosyaya kaydet
+if rss_tree:
+    file_name = f"podcast_{PODCAST_ID}.xml"
+    rss_tree.write(file_name, encoding="utf-8", xml_declaration=True)
+    print(f"✅ RSS feed '{file_name}' olarak kaydedildi!")
